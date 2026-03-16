@@ -1,0 +1,14 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "mattermost": {
+      "type": "local",
+      "command": ["mattermost-mcp-proxy"],
+      "environment": {
+        "MM_SERVER_URL": "https://mattermost.example.com",
+        "MM_MCP_SERVER_PATH": "/usr/local/bin/mattermost-mcp-server",
+        "MM_CDP_PORT": "9222"
+      }
+    }
+  }
+}

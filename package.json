@@ -1,0 +1,18 @@
+{
+  "name": "mattermost-mcp-proxy",
+  "version": "1.0.0",
+  "description": "MCP proxy for Mattermost that extracts auth token from the desktop client",
+  "main": "dist/index.js",
+  "bin": {
+    "mattermost-mcp-proxy": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.3.0"
+  }
+}
