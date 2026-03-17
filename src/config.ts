@@ -25,6 +25,8 @@ export interface Config {
   tlsVerify: boolean;
   /** Optional restrictions to limit agent capabilities */
   restrictions?: Restrictions;
+  /** Cache TTL in seconds for entity lookups (default: 300 = 5 min). Set to 0 to disable. */
+  cacheTtl?: number;
 }
 
 export function loadConfig(): Config {
@@ -66,5 +68,9 @@ export function loadConfig(): Config {
         ? process.env.MM_TLS_VERIFY === "1" || process.env.MM_TLS_VERIFY === "true"
         : (fileConfig.tlsVerify as boolean) ?? false,
     restrictions: (fileConfig.restrictions as Restrictions) || undefined,
+    cacheTtl:
+      process.env.MM_CACHE_TTL !== undefined
+        ? parseInt(process.env.MM_CACHE_TTL, 10)
+        : (fileConfig.cacheTtl as number) ?? undefined,
   };
 }

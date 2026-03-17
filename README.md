@@ -17,6 +17,7 @@ mattermost-mcp-proxy (Node.js)
     |-- 2. Запускает локальный reverse proxy (http://127.0.0.1:<порт>)
     |      - Подставляет заголовки браузера в каждый запрос
     |      - Обходит antibot/WAF на корпоративных инстансах
+    |      - Кэширует ответы для повторных запросов сущностей
     |
     +-- 3. Запускает официальный Mattermost MCP server
            - Направляет его на локальный reverse proxy
@@ -56,6 +57,7 @@ sudo bash install.sh
   "mcpServerPath": "/usr/local/bin/mattermost-mcp-server",
   "cdpPort": 9222,
   "tlsVerify": false,
+  "cacheTtl": 300,
   "restrictions": {
     "allowedTools": ["read_channel", "create_post", "search_posts", "get_channel_info"],
     "allowedChannels": ["town-square", "dev-team"],
@@ -85,8 +87,37 @@ mattermost-mcp-proxy
 | `MM_MCP_SERVER_ARGS` | `mcpServerArgs` | нет | Доп. аргументы для MCP-сервера (через пробел) |
 | `MM_CDP_PORT` | `cdpPort` | нет | Порт CDP (по умолчанию: 9222) |
 | `MM_TLS_VERIFY` | `tlsVerify` | нет | Проверка TLS-сертификатов: `true`/`1` — включить, `false`/`0` — выключить (по умолчанию: `false`) |
+| `MM_CACHE_TTL` | `cacheTtl` | нет | TTL кэша сущностей в секундах (по умолчанию: `300` = 5 мин). `0` — отключить кэш |
 | `MCP_PROXY_CONFIG` | -- | нет | Путь к JSON-конфигу (по умолчанию: `~/.mattermost-mcp-proxy.json`) |
 | -- | `restrictions` | нет | Ограничения возможностей агента (см. ниже) |
+
+### Кэширование сущностей
+
+Reverse proxy автоматически кэширует GET-ответы для часто запрашиваемых сущностей Mattermost. Это ускоряет работу агента, т.к. при типичном сценарии одни и те же пользователи, каналы и команды запрашиваются многократно.
+
+**Кэшируемые эндпоинты:**
+
+| Эндпоинт | Описание |
+|---|---|
+| `/api/v4/users/{id}` | Пользователь по ID |
+| `/api/v4/users/username/{username}` | Пользователь по имени |
+| `/api/v4/users/me` | Текущий пользователь |
+| `/api/v4/users/me/teams` | Команды текущего пользователя |
+| `/api/v4/teams/{id}` | Команда по ID |
+| `/api/v4/teams/{id}/channels/name/{name}` | Канал по имени |
+| `/api/v4/channels/{id}` | Канал по ID |
+| `/api/v4/channels/{id}/members` | Участники канала |
+
+- TTL по умолчанию: **5 минут** (настраивается через `cacheTtl`)
+- Кэшируются только успешные ответы (2xx)
+- Посты, результаты поиска и другие динамические данные **не кэшируются**
+- Для кэшируемых запросов отключается сжатие (`accept-encoding`), чтобы хранить plain text
+- Установите `cacheTtl: 0` для полного отключения кэша
+
+```
+[mattermost-mcp-proxy/reverse-proxy] Cache HIT: /api/v4/users/abc123def456ghi789jkl012mn
+[mattermost-mcp-proxy/cache] Cached: /api/v4/users/me/teams (1234 bytes, 3 entries total)
+```
 
 ### Ограничения (`restrictions`)
 
@@ -183,10 +214,11 @@ src/
   index.ts          -- Точка входа: извлечение токена и запуск MCP-сервера
   config.ts         -- Загрузка конфигурации из env и JSON
   cdp-extract.ts    -- Извлечение токена, cookies и User-Agent через CDP WebSocket
-  reverse-proxy.ts  -- Локальный HTTP reverse proxy с подстановкой заголовков браузера
+  reverse-proxy.ts  -- Локальный HTTP reverse proxy с подстановкой заголовков браузера и кэшированием
   proxy.ts          -- Запуск MCP-сервера через reverse proxy
   mcp-filter.ts     -- Фильтрация MCP JSON-RPC сообщений (инструменты, каналы, пользователи)
   resolve.ts        -- Резолвинг имён каналов/пользователей в ID через Mattermost API
+  cache.ts          -- In-memory кэш для GET-запросов к API сущностей Mattermost
 ```
 
 ### Извлечение токена

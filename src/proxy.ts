@@ -17,7 +17,8 @@ export async function startMcpProxy(
   accessToken: string,
   browserCtx: BrowserContext
 ): Promise<number> {
-  const proxy = await startReverseProxy(config.mmServerUrl, browserCtx);
+  const cacheTtlMs = config.cacheTtl !== undefined ? config.cacheTtl * 1000 : undefined;
+  const proxy = await startReverseProxy(config.mmServerUrl, browserCtx, cacheTtlMs);
 
   // Resolve human-readable names to IDs before starting the MCP server
   let restrictions = config.restrictions;

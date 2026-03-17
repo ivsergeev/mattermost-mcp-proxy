@@ -1,5 +1,6 @@
 import * as http from "http";
 import * as https from "https";
+import { ApiCache } from "./cache.js";
 
 export interface BrowserContext {
   /** User-Agent string from the real browser */
@@ -11,15 +12,18 @@ export interface BrowserContext {
 /**
  * Starts a local HTTP reverse proxy that forwards requests to the real
  * Mattermost server, injecting browser-like headers to bypass antibot/WAF.
+ * Includes in-memory caching for entity lookup GET requests.
  *
  * Returns the local URL (http://127.0.0.1:<port>) to give to the MCP server.
  */
 export function startReverseProxy(
   targetUrl: string,
-  browserCtx: BrowserContext
+  browserCtx: BrowserContext,
+  cacheTtlMs?: number
 ): Promise<{ localUrl: string; close: () => void }> {
   const target = new URL(targetUrl);
   const isHttps = target.protocol === "https:";
+  const cache = new ApiCache(cacheTtlMs);
 
   const log = (msg: string) =>
     process.stderr.write(`[mattermost-mcp-proxy/reverse-proxy] ${msg}\n`);
@@ -27,6 +31,18 @@ export function startReverseProxy(
   return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
       const reqUrl = req.url || "/";
+      const method = req.method || "GET";
+
+      // Check cache for eligible GET requests
+      if (cache.isCacheable(method, reqUrl)) {
+        const cached = cache.get(reqUrl);
+        if (cached) {
+          log(`Cache HIT: ${reqUrl}`);
+          res.writeHead(cached.statusCode, cached.headers);
+          res.end(cached.body);
+          return;
+        }
+      }
 
       // Build headers: start from incoming, override with browser-like values
       const headers: Record<string, string> = {};
@@ -49,6 +65,12 @@ export function startReverseProxy(
       delete headers["connection"];
       delete headers["keep-alive"];
 
+      // Disable compression for cacheable requests so we store plain text
+      const shouldCache = cache.isCacheable(method, reqUrl);
+      if (shouldCache) {
+        delete headers["accept-encoding"];
+      }
+
       const options: https.RequestOptions = {
         hostname: target.hostname,
         port: target.port || (isHttps ? 443 : 80),
@@ -66,8 +88,20 @@ export function startReverseProxy(
           const respHeaders = { ...proxyRes.headers };
           delete respHeaders["set-cookie"];
 
-          res.writeHead(proxyRes.statusCode || 502, respHeaders);
-          proxyRes.pipe(res, { end: true });
+          if (shouldCache) {
+            // Buffer the response for caching
+            const chunks: Buffer[] = [];
+            proxyRes.on("data", (chunk: Buffer) => chunks.push(chunk));
+            proxyRes.on("end", () => {
+              const body = Buffer.concat(chunks);
+              cache.set(reqUrl, proxyRes.statusCode || 502, respHeaders as Record<string, string | string[]>, body);
+              res.writeHead(proxyRes.statusCode || 502, respHeaders);
+              res.end(body);
+            });
+          } else {
+            res.writeHead(proxyRes.statusCode || 502, respHeaders);
+            proxyRes.pipe(res, { end: true });
+          }
         }
       );
 
