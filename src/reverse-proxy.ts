@@ -12,7 +12,8 @@ export interface BrowserContext {
 /**
  * Starts a local HTTP reverse proxy that forwards requests to the real
  * Mattermost server, injecting browser-like headers to bypass antibot/WAF.
- * Includes in-memory caching for entity lookup GET requests.
+ * Includes in-memory caching for entity lookup GET requests and stable
+ * POST search endpoints (users, channels).
  *
  * Returns the local URL (http://127.0.0.1:<port>) to give to the MCP server.
  */
@@ -33,8 +34,8 @@ export function startReverseProxy(
       const reqUrl = req.url || "/";
       const method = req.method || "GET";
 
-      // Check cache for eligible GET requests
-      if (cache.isCacheable(method, reqUrl)) {
+      // Check cache for eligible GET requests (no body needed)
+      if (method === "GET" && cache.isCacheableGet(reqUrl)) {
         const cached = cache.get(reqUrl);
         if (cached) {
           log(`Cache HIT: ${reqUrl}`);
@@ -44,57 +45,88 @@ export function startReverseProxy(
         }
       }
 
-      // Build headers: start from incoming, override with browser-like values
-      const headers: Record<string, string> = {};
-      // Copy original headers (lowercase)
-      for (const [key, val] of Object.entries(req.headers)) {
-        if (val) headers[key] = Array.isArray(val) ? val.join(", ") : val;
+      // For POST requests that might be cacheable, we need the body first
+      const isCacheablePost = method === "POST" && cache.isCacheablePost(reqUrl);
+
+      if (isCacheablePost) {
+        // Buffer request body to compute cache key
+        const reqChunks: Buffer[] = [];
+        req.on("data", (chunk: Buffer) => reqChunks.push(chunk));
+        req.on("end", () => {
+          const reqBody = Buffer.concat(reqChunks);
+          const cacheKey = cache.postKey(reqUrl, reqBody);
+
+          // Check cache
+          const cached = cache.get(cacheKey);
+          if (cached) {
+            log(`Cache HIT: POST ${reqUrl}`);
+            res.writeHead(cached.statusCode, cached.headers);
+            res.end(cached.body);
+            return;
+          }
+
+          // Cache miss — forward with buffered body
+          forwardRequest(req, res, reqUrl, method, true, cacheKey, reqBody);
+        });
+      } else {
+        const shouldCache = method === "GET" && cache.isCacheableGet(reqUrl);
+        forwardRequest(req, res, reqUrl, method, shouldCache, reqUrl, null);
       }
 
-      // Override with browser context
-      headers["user-agent"] = browserCtx.userAgent;
-      headers["cookie"] = browserCtx.cookieHeader;
-      headers["host"] = target.host;
+      function forwardRequest(
+        req: http.IncomingMessage,
+        res: http.ServerResponse,
+        reqUrl: string,
+        method: string,
+        shouldCache: boolean,
+        cacheKey: string,
+        bufferedBody: Buffer | null
+      ) {
+        // Build headers: start from incoming, override with browser-like values
+        const headers: Record<string, string> = {};
+        for (const [key, val] of Object.entries(req.headers)) {
+          if (val) headers[key] = Array.isArray(val) ? val.join(", ") : val;
+        }
 
-      // Add typical browser headers if missing
-      headers["accept-language"] ??= "en-US,en;q=0.9,ru;q=0.8";
-      headers["accept-encoding"] ??= "gzip, deflate, br";
-      headers["x-requested-with"] ??= "XMLHttpRequest";
+        // Override with browser context
+        headers["user-agent"] = browserCtx.userAgent;
+        headers["cookie"] = browserCtx.cookieHeader;
+        headers["host"] = target.host;
 
-      // Remove hop-by-hop headers that shouldn't be forwarded
-      delete headers["connection"];
-      delete headers["keep-alive"];
+        // Add typical browser headers if missing
+        headers["accept-language"] ??= "en-US,en;q=0.9,ru;q=0.8";
+        headers["accept-encoding"] ??= "gzip, deflate, br";
+        headers["x-requested-with"] ??= "XMLHttpRequest";
 
-      // Disable compression for cacheable requests so we store plain text
-      const shouldCache = cache.isCacheable(method, reqUrl);
-      if (shouldCache) {
-        delete headers["accept-encoding"];
-      }
+        // Remove hop-by-hop headers
+        delete headers["connection"];
+        delete headers["keep-alive"];
 
-      const options: https.RequestOptions = {
-        hostname: target.hostname,
-        port: target.port || (isHttps ? 443 : 80),
-        path: reqUrl,
-        method: req.method,
-        headers,
-        rejectUnauthorized: process.env.NODE_TLS_REJECT_UNAUTHORIZED !== "0",
-      };
+        // Disable compression for cacheable requests so we store plain text
+        if (shouldCache) {
+          delete headers["accept-encoding"];
+        }
 
-      const transport = isHttps ? https : http;
-      const proxyReq = transport.request(
-        options,
-        (proxyRes) => {
-          // Remove Set-Cookie from responses (the MCP server doesn't need to track cookies)
+        const options: https.RequestOptions = {
+          hostname: target.hostname,
+          port: target.port || (isHttps ? 443 : 80),
+          path: reqUrl,
+          method,
+          headers,
+          rejectUnauthorized: process.env.NODE_TLS_REJECT_UNAUTHORIZED !== "0",
+        };
+
+        const transport = isHttps ? https : http;
+        const proxyReq = transport.request(options, (proxyRes) => {
           const respHeaders = { ...proxyRes.headers };
           delete respHeaders["set-cookie"];
 
           if (shouldCache) {
-            // Buffer the response for caching
             const chunks: Buffer[] = [];
             proxyRes.on("data", (chunk: Buffer) => chunks.push(chunk));
             proxyRes.on("end", () => {
               const body = Buffer.concat(chunks);
-              cache.set(reqUrl, proxyRes.statusCode || 502, respHeaders as Record<string, string | string[]>, body);
+              cache.set(cacheKey, proxyRes.statusCode || 502, respHeaders as Record<string, string | string[]>, body);
               res.writeHead(proxyRes.statusCode || 502, respHeaders);
               res.end(body);
             });
@@ -102,21 +134,26 @@ export function startReverseProxy(
             res.writeHead(proxyRes.statusCode || 502, respHeaders);
             proxyRes.pipe(res, { end: true });
           }
+        });
+
+        proxyReq.on("error", (err) => {
+          log(`Proxy request error: ${err.message}`);
+          res.writeHead(502);
+          res.end("Bad Gateway");
+        });
+
+        if (bufferedBody) {
+          // Body already buffered — write it directly
+          proxyReq.end(bufferedBody);
+        } else {
+          // Stream body from client
+          req.pipe(proxyReq, { end: true });
         }
-      );
-
-      proxyReq.on("error", (err) => {
-        log(`Proxy request error: ${err.message}`);
-        res.writeHead(502);
-        res.end("Bad Gateway");
-      });
-
-      req.pipe(proxyReq, { end: true });
+      }
     });
 
     server.on("error", reject);
 
-    // Listen on random port on loopback
     server.listen(0, "127.0.0.1", () => {
       const addr = server.address();
       if (!addr || typeof addr === "string") {
