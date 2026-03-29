@@ -33,13 +33,6 @@ function Test-Command ($cmd) {
     return $?
 }
 
-function Refresh-Path {
-    # Re-read PATH from the registry so newly installed tools are visible
-    $machinePath = [Environment]::GetEnvironmentVariable("Path", "Machine")
-    $userPath    = [Environment]::GetEnvironmentVariable("Path", "User")
-    $env:Path    = "$machinePath;$userPath"
-}
-
 function Invoke-Native {
     <#
     .SYNOPSIS
@@ -78,73 +71,31 @@ function Invoke-Native {
     }
 }
 
-# ── 1. Check git ─────────────────────────────────────────────
+# ── 1. Check prerequisites ────────────────────────────────────
 
 if (-not (Test-Command "git")) {
-    Error "Git is required but not found. Install from https://git-scm.com/"
+    Error "Git is required. Install from https://git-scm.com/"
 }
 
-# ── 2. Node.js ───────────────────────────────────────────────
-
-$nodeOk = $false
-if (Test-Command "node") {
+if (-not (Test-Command "node")) {
+    Error "Node.js >= $NODE_MAJOR is required. Install from https://nodejs.org/"
+} else {
     $nodeVer = (node -v) -replace '^v',''
     $nodeMajor = [int]($nodeVer.Split('.')[0])
-    if ($nodeMajor -ge $NODE_MAJOR) {
-        Log "Node.js v$nodeVer already installed, skipping."
-        $nodeOk = $true
+    if ($nodeMajor -lt $NODE_MAJOR) {
+        Error "Node.js >= $NODE_MAJOR is required (found v$nodeVer). Update from https://nodejs.org/"
     }
+    Log "Node.js v$nodeVer found."
 }
 
-if (-not $nodeOk) {
-    Log "Installing Node.js ${NODE_MAJOR}.x via winget..."
-    if (Test-Command "winget") {
-        Invoke-Native "winget install --id OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements" "winget install Node.js"
-        Refresh-Path
-        # winget may not update PATH in time — add the default Node.js location explicitly
-        $defaultNodeDir = "$env:ProgramFiles\nodejs"
-        if ((Test-Path $defaultNodeDir) -and ($env:Path -notlike "*$defaultNodeDir*")) {
-            $env:Path = "$defaultNodeDir;$env:Path"
-        }
-        if (Test-Command "node") {
-            Log "Node.js $(node -v) installed."
-        } else {
-            Error "Node.js installation via winget failed. Install manually from https://nodejs.org/"
-        }
-    } else {
-        Error "Node.js >= $NODE_MAJOR is required. Install from https://nodejs.org/"
-    }
-}
-
-# ── 3. Go ────────────────────────────────────────────────────
-
-$goOk = $false
-if (Test-Command "go") {
+if (-not (Test-Command "go")) {
+    Error "Go >= $GO_VERSION is required. Install from https://go.dev/dl/"
+} else {
     $goVer = ((go version) -replace '.*go(\d+\.\d+\.\d+).*','$1')
-    if ([version]$goVer -ge [version]$GO_VERSION) {
-        Log "Go $goVer already installed, skipping."
-        $goOk = $true
+    if ([version]$goVer -lt [version]$GO_VERSION) {
+        Error "Go >= $GO_VERSION is required (found $goVer). Update from https://go.dev/dl/"
     }
-}
-
-if (-not $goOk) {
-    Log "Installing Go ${GO_VERSION} via winget..."
-    if (Test-Command "winget") {
-        Invoke-Native "winget install --id GoLang.Go --accept-source-agreements --accept-package-agreements" "winget install Go"
-        Refresh-Path
-        # winget may not update PATH in time — add the default Go location explicitly
-        $defaultGoBin = "$env:ProgramFiles\Go\bin"
-        if ((Test-Path $defaultGoBin) -and ($env:Path -notlike "*$defaultGoBin*")) {
-            $env:Path = "$defaultGoBin;$env:Path"
-        }
-        if (Test-Command "go") {
-            Log "Go $((go version) -replace '.*go(\d+\.\d+\.\d+).*','$1') installed."
-        } else {
-            Error "Go installation via winget failed. Install manually from https://go.dev/dl/"
-        }
-    } else {
-        Error "Go >= $GO_VERSION is required. Install from https://go.dev/dl/"
-    }
+    Log "Go $goVer found."
 }
 
 # ── 4. Build official Mattermost MCP server ──────────────────
