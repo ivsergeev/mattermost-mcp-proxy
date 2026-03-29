@@ -47,6 +47,7 @@ function Invoke-Native {
     PowerShell + $ErrorActionPreference="Stop" converts ANY stderr output from native
     executables (git, go, npm) into a RemoteException. We temporarily flip the GLOBAL
     preference to "Continue" so the pipeline ignores stderr, then check $LASTEXITCODE.
+    Output is captured and displayed; on failure it is included in the exception.
     #>
     param(
         [Parameter(Mandatory)][scriptblock]$Command,
@@ -55,9 +56,21 @@ function Invoke-Native {
     $saved = $global:ErrorActionPreference
     $global:ErrorActionPreference = "Continue"
     try {
-        & $Command
+        # Reset so we don't inherit a stale value from a previous command
+        $global:LASTEXITCODE = 0
+        # Capture all streams (stdout + stderr merged) so we can show them on failure
+        $output = & $Command 2>&1 | ForEach-Object {
+            # Display each line in real time
+            if ($_ -is [System.Management.Automation.ErrorRecord]) {
+                Write-Host $_.ToString() -ForegroundColor DarkGray
+            } else {
+                Write-Host $_
+            }
+            $_  # pass through for capture
+        }
         if ($LASTEXITCODE -ne 0) {
-            throw "$Description failed (exit code $LASTEXITCODE)"
+            $tail = ($output | Select-Object -Last 30) -join "`n"
+            throw "$Description failed (exit code $LASTEXITCODE):`n$tail"
         }
     } finally {
         $global:ErrorActionPreference = $saved
