@@ -29,23 +29,36 @@ mattermost-mcp-proxy (Node.js)
 
 ## Требования
 
-- **Ubuntu** (или другой Linux-дистрибутив)
+- **Windows 10+** или **Ubuntu** (или другой Linux-дистрибутив)
 - **Mattermost-клиент** (Desktop или любой Electron-клиент), запущенный с CDP
 - **Node.js** >= 22 (встроенные `fetch` и `WebSocket`)
 - **Go** >= 1.24 (для сборки официального Mattermost MCP server)
 
 ## Установка
 
+### Linux
+
 ```bash
 sudo bash install.sh
 ```
 
-Скрипт установки:
+### Windows
 
-1. Установит Node.js 22 и Go 1.24 (если не установлены)
-2. Склонирует и соберет официальный [Mattermost MCP server](https://github.com/mattermost/mattermost-plugin-agents) (`mcpserver/cmd/main.go`)
-3. Соберет и установит `mattermost-mcp-proxy` в `/opt/mattermost-mcp-proxy`
-4. Создаст шаблон конфига `~/.mattermost-mcp-proxy.json`
+Запустите PowerShell от имени администратора:
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\install.ps1
+```
+
+### Что делает скрипт установки
+
+Скрипты `install.sh` (Linux) и `install.ps1` (Windows) выполняют одинаковые шаги:
+
+1. Установят Node.js 22 и Go 1.24 (если не установлены)
+2. Склонируют и соберут официальный [Mattermost MCP server](https://github.com/mattermost/mattermost-plugin-agents) (`mcpserver/cmd/main.go`)
+3. Соберут и установят `mattermost-mcp-proxy` (Linux: `/opt/mattermost-mcp-proxy`, Windows: `%ProgramFiles%\mattermost-mcp-proxy`)
+4. Создадут шаблон конфига `~/.mattermost-mcp-proxy.json`
 
 ### После установки
 
