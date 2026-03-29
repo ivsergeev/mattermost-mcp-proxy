@@ -87,6 +87,11 @@ if (-not $nodeOk) {
     if (Test-Command "winget") {
         Invoke-Native { winget install --id OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements } "winget install Node.js"
         Refresh-Path
+        # winget may not update PATH in time — add the default Node.js location explicitly
+        $defaultNodeDir = "$env:ProgramFiles\nodejs"
+        if ((Test-Path $defaultNodeDir) -and ($env:Path -notlike "*$defaultNodeDir*")) {
+            $env:Path = "$defaultNodeDir;$env:Path"
+        }
         if (Test-Command "node") {
             Log "Node.js $(node -v) installed."
         } else {
@@ -113,6 +118,11 @@ if (-not $goOk) {
     if (Test-Command "winget") {
         Invoke-Native { winget install --id GoLang.Go --accept-source-agreements --accept-package-agreements } "winget install Go"
         Refresh-Path
+        # winget may not update PATH in time — add the default Go location explicitly
+        $defaultGoBin = "$env:ProgramFiles\Go\bin"
+        if ((Test-Path $defaultGoBin) -and ($env:Path -notlike "*$defaultGoBin*")) {
+            $env:Path = "$defaultGoBin;$env:Path"
+        }
         if (Test-Command "go") {
             Log "Go $((go version) -replace '.*go(\d+\.\d+\.\d+).*','$1') installed."
         } else {
@@ -142,8 +152,16 @@ if (Test-Path $MM_MCP_BIN) {
     $mainGo = Join-Path $buildDir "mcpserver\cmd\main.go"
     if (Test-Path $mainGo) {
         Log "Building Mattermost MCP server (this may take a few minutes)..."
+        # Ensure GOPATH exists for freshly installed Go
+        if (-not $env:GOPATH) {
+            $env:GOPATH = Join-Path $env:USERPROFILE "go"
+        }
+        if (-not (Test-Path $env:GOPATH)) {
+            New-Item -ItemType Directory -Path $env:GOPATH -Force | Out-Null
+        }
         $binDir = Split-Path $MM_MCP_BIN -Parent
         if (-not (Test-Path $binDir)) { New-Item -ItemType Directory -Path $binDir -Force | Out-Null }
+        Log "Running: go build -o $MM_MCP_BIN ./mcpserver/cmd/main.go"
         Invoke-Native { go build -o $MM_MCP_BIN ./mcpserver/cmd/main.go } "go build"
         if (Test-Path $MM_MCP_BIN) {
             Log "Mattermost MCP server installed at $MM_MCP_BIN"
