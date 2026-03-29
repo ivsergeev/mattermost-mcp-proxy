@@ -43,37 +43,38 @@ function Refresh-Path {
 function Invoke-Native {
     <#
     .SYNOPSIS
-    Runs a native command without PowerShell treating stderr as a terminating error.
-    PowerShell + $ErrorActionPreference="Stop" converts ANY stderr output from native
-    executables (git, go, npm) into a RemoteException. We temporarily flip the GLOBAL
-    preference to "Continue" so the pipeline ignores stderr, then check $LASTEXITCODE.
-    Output is captured and displayed; on failure it is included in the exception.
+    Runs a native command completely outside PowerShell's error handling.
+    Uses Start-Process + cmd /c so PowerShell never sees stderr at all.
+    Output is captured to a temp file, displayed, and included in the
+    exception on failure.
     #>
     param(
-        [Parameter(Mandatory)][scriptblock]$Command,
+        [Parameter(Mandatory)][string]$Command,
         [string]$Description = "Native command"
     )
-    $saved = $global:ErrorActionPreference
-    $global:ErrorActionPreference = "Continue"
+    $outFile = [System.IO.Path]::GetTempFileName()
     try {
-        # Reset so we don't inherit a stale value from a previous command
-        $global:LASTEXITCODE = 0
-        # Capture all streams (stdout + stderr merged) so we can show them on failure
-        $output = & $Command 2>&1 | ForEach-Object {
-            # Display each line in real time
-            if ($_ -is [System.Management.Automation.ErrorRecord]) {
-                Write-Host $_.ToString() -ForegroundColor DarkGray
-            } else {
-                Write-Host $_
-            }
-            $_  # pass through for capture
+        $proc = Start-Process -FilePath "cmd.exe" `
+            -ArgumentList "/c", "$Command 2>&1" `
+            -NoNewWindow -Wait -PassThru `
+            -RedirectStandardOutput $outFile `
+            -WorkingDirectory (Get-Location).Path
+
+        # Show output to console
+        if (Test-Path $outFile) {
+            $content = Get-Content $outFile -Raw -ErrorAction SilentlyContinue
+            if ($content) { Write-Host $content }
         }
-        if ($LASTEXITCODE -ne 0) {
-            $tail = ($output | Select-Object -Last 30) -join "`n"
-            throw "$Description failed (exit code $LASTEXITCODE):`n$tail"
+
+        if ($proc.ExitCode -ne 0) {
+            $tail = ""
+            if (Test-Path $outFile) {
+                $tail = (Get-Content $outFile -Tail 30 -ErrorAction SilentlyContinue) -join "`n"
+            }
+            throw "$Description failed (exit code $($proc.ExitCode)):`n$tail"
         }
     } finally {
-        $global:ErrorActionPreference = $saved
+        Remove-Item $outFile -Force -ErrorAction SilentlyContinue
     }
 }
 
@@ -98,7 +99,7 @@ if (Test-Command "node") {
 if (-not $nodeOk) {
     Log "Installing Node.js ${NODE_MAJOR}.x via winget..."
     if (Test-Command "winget") {
-        Invoke-Native { winget install --id OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements } "winget install Node.js"
+        Invoke-Native "winget install --id OpenJS.NodeJS.LTS --accept-source-agreements --accept-package-agreements" "winget install Node.js"
         Refresh-Path
         # winget may not update PATH in time — add the default Node.js location explicitly
         $defaultNodeDir = "$env:ProgramFiles\nodejs"
@@ -129,7 +130,7 @@ if (Test-Command "go") {
 if (-not $goOk) {
     Log "Installing Go ${GO_VERSION} via winget..."
     if (Test-Command "winget") {
-        Invoke-Native { winget install --id GoLang.Go --accept-source-agreements --accept-package-agreements } "winget install Go"
+        Invoke-Native "winget install --id GoLang.Go --accept-source-agreements --accept-package-agreements" "winget install Go"
         Refresh-Path
         # winget may not update PATH in time — add the default Go location explicitly
         $defaultGoBin = "$env:ProgramFiles\Go\bin"
@@ -158,9 +159,9 @@ if (Test-Path $MM_MCP_BIN) {
     $tempDir  = (Get-Item $env:TEMP).FullName
     $buildDir = Join-Path $tempDir "mm-mcp-build-$(Get-Random)"
     Log "Cloning mattermost-plugin-agents repository (commit $($MM_MCP_COMMIT.Substring(0,12)))..."
-    Invoke-Native { git clone $MM_MCP_REPO $buildDir -b $MM_MCP_BRANCH } "git clone"
+    Invoke-Native "git clone `"$MM_MCP_REPO`" `"$buildDir`" -b $MM_MCP_BRANCH" "git clone"
     Push-Location $buildDir
-    Invoke-Native { git checkout $MM_MCP_COMMIT } "git checkout"
+    Invoke-Native "git checkout $MM_MCP_COMMIT" "git checkout"
 
     $mainGo = Join-Path $buildDir "mcpserver\cmd\main.go"
     if (Test-Path $mainGo) {
@@ -175,7 +176,7 @@ if (Test-Path $MM_MCP_BIN) {
         $binDir = Split-Path $MM_MCP_BIN -Parent
         if (-not (Test-Path $binDir)) { New-Item -ItemType Directory -Path $binDir -Force | Out-Null }
         Log "Running: go build -o $MM_MCP_BIN ./mcpserver/cmd/main.go"
-        Invoke-Native { go build -o $MM_MCP_BIN ./mcpserver/cmd/main.go } "go build"
+        Invoke-Native "go build -o `"$MM_MCP_BIN`" ./mcpserver/cmd/main.go" "go build"
         if (Test-Path $MM_MCP_BIN) {
             Log "Mattermost MCP server installed at $MM_MCP_BIN"
         }
@@ -200,8 +201,8 @@ Copy-Item (Join-Path $ScriptDir "tsconfig.json") $InstallDir -Force
 Copy-Item (Join-Path $ScriptDir "src") $InstallDir -Recurse -Force
 
 Push-Location $InstallDir
-Invoke-Native { npm install } "npm install"
-Invoke-Native { npm run build } "npm run build"
+Invoke-Native "npm install" "npm install"
+Invoke-Native "npm run build" "npm run build"
 Pop-Location
 
 # No runtime dependencies - remove build artifacts
